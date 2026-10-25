@@ -1,0 +1,48 @@
+# BuildBuddy: one module, two licenses
+
+[BuildBuddy's LICENSE](https://github.com/buildbuddy-io/buildbuddy/blob/master/LICENSE)
+says `enterprise/` is under `enterprise/LICENSE` and the rest is MIT. This
+example imports BuildBuddy from `go.mod` with rules_go and Gazelle and tags every
+generated package with the license of the subtree it lives in.
+
+## How it works
+
+1. `go_deps.from_file` imports `github.com/buildbuddy-io/buildbuddy` from `go.mod`.
+2. `go_deps.gazelle_override` runs Gazelle with only the license language
+   (`-lang=license`) and these flags, so BuildBuddy's own BUILD files are kept and
+   just get one `package(default_applicable_licenses = ...)` call appended:
+   - `-license_default=@@//licenses:buildbuddy_mit`
+   - `-license_subtree=enterprise=@@//licenses:buildbuddy_enterprise`
+
+   Flags are used instead of `build_directives` because `go_repository` writes
+   directives over the root BUILD file.
+3. `go_repository` always runs the Gazelle from `@bazel_gazelle_go_repository_tools`.
+   `override_repo` replaces that repo with `gazelle_tools_with_license`
+   (`../tools_repo.bzl`), a Gazelle built with the license plugin, so the
+   directives take effect inside the external repo.
+4. `//cmd` has two binaries plus SBOM targets for each (`*_sbom`, `*_spdx`, `*_cyclonedx`):
+   - `oss_only` uses `server/util/random` -> MIT only.
+   - `with_enterprise` also uses `enterprise/server/util/fieldgetter` -> enterprise license too.
+5. `//cmd:license_coverage_test` asserts that mapping from the SBOM graphs.
+
+```
+bazel test //cmd:license_coverage_test
+bazel build //cmd:with_enterprise_spdx
+```
+
+## Notes
+
+- Pinned to `v1.9.2`, the newest version served by the Go proxy used while
+  writing this. It predates `cli/`. BuildBuddy's newer tags (`v2.x`) are not
+  valid Go module versions (its `go.mod` has no `/v2`), so use the commit's
+  pseudo-version, e.g. `v0.0.0-20261022001121-0256c04a93c1` for `v2.318.0`
+  (update `go.sum` too), where `@com_github_buildbuddy_io_buildbuddy//cli/...`
+  exists. Imports there need the transitive requirements in `go.mod`.
+- BuildBuddy restricts the visibility of its `enterprise/` targets to its own
+  workspace. Keeping their BUILD files means that restriction stays, so the
+  example's `.bazelrc` sets `--check_visibility=false`.
+- `@@//licenses:...` refers to this module's license targets from inside the
+  external repo; it only works while this module is the root module.
+- The tools repo is built with the host `go`.
+- The SPDX/CycloneDX writers don't emit license fields yet; the license
+  mapping is visible in `*_sbom.graph.json` and `*_sbom.sbom-classifications.json`.

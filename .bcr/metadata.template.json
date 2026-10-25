@@ -1,0 +1,26 @@
+{
+  "homepage": "https://github.com/hermeticbuild/gazelle_supply_chain",
+  "maintainers": [
+    {
+      "name": "Richard Lavoie",
+      "email": "lavoie.richard@gmail.com",
+      "github_user_id": 544998,
+      "github": "darkrift"
+    },
+    {
+      "name": "David Zbarsky",
+      "email": "dzbarsky@gmail.com",
+      "github_user_id": 1565842,
+      "github": "dzbarsky"
+    },
+    {
+      "name": "Corentin Kerisit",
+      "email": "corentin.kerisit@gmail.com",
+      "github_user_id": 1126594,
+      "github": "cerisier"
+    }
+  ],
+  "repository": ["github:hermeticbuild/gazelle_supply_chain"],
+  "versions": [],
+  "yanked_versions": {}
+}

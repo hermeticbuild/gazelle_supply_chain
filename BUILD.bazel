@@ -1,0 +1,39 @@
+load("@gazelle//:def.bzl", "gazelle", "gazelle_binary")
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "gazelle_supply_chain",
+    srcs = ["language.go"],
+    importpath = "github.com/hermeticbuild/gazelle_supply_chain",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@gazelle//config",
+        "@gazelle//language",
+        "@gazelle//rule",
+    ],
+)
+
+go_test(
+    name = "gazelle_supply_chain_test",
+    srcs = ["language_test.go"],
+    embed = [":gazelle_supply_chain"],
+    deps = [
+        "@gazelle//config",
+        "@gazelle//language",
+        "@gazelle//rule",
+    ],
+)
+
+# Gazelle that only runs the license extension.
+gazelle_binary(
+    name = "gazelle_supply_chain_bin",
+    languages = [":gazelle_supply_chain"],
+    visibility = ["//visibility:public"],
+)
+
+gazelle(
+    name = "gazelle",
+    gazelle = ":gazelle_supply_chain_bin",
+)
+
+exports_files(["language.go"])

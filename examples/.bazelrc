@@ -1,0 +1,3 @@
+# BuildBuddy restricts its enterprise/ targets to its own workspace; this example
+# depends on them only to show their license coverage.
+build --check_visibility=false

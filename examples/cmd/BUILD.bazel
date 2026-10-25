@@ -1,0 +1,59 @@
+load("@rules_go//go:def.bzl", "go_binary")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+load("@supply_chain_tools//sbom:cyclonedx.bzl", "cyclonedx")
+load("@supply_chain_tools//sbom:sbom.bzl", "sbom")
+load("@supply_chain_tools//sbom:spdx.bzl", "spdx")
+
+package(
+    default_package_metadata = ["//licenses:example"],
+    default_visibility = ["//visibility:public"],
+)
+
+# Only depends on packages outside enterprise/: expect MIT from BuildBuddy.
+go_binary(
+    name = "oss_only",
+    srcs = ["oss_only/main.go"],
+    deps = ["@com_github_buildbuddy_io_buildbuddy//server/util/random"],
+)
+
+# Also depends on enterprise/: expect the BuildBuddy Enterprise license too.
+go_binary(
+    name = "with_enterprise",
+    srcs = ["with_enterprise/main.go"],
+    deps = [
+        "@com_github_buildbuddy_io_buildbuddy//enterprise/server/util/fieldgetter",
+        "@com_github_buildbuddy_io_buildbuddy//server/util/random",
+    ],
+)
+
+[
+    [
+        sbom(
+            name = "{}_sbom".format(app),
+            target = ":{}".format(app),
+        ),
+        spdx(
+            name = "{}_spdx".format(app),
+            out = "{}.spdx.json".format(app),
+            sbom = ":{}_sbom".format(app),
+        ),
+        cyclonedx(
+            name = "{}_cyclonedx".format(app),
+            out = "{}.cdx.json".format(app),
+            sbom = ":{}_sbom".format(app),
+        ),
+    ]
+    for app in [
+        "oss_only",
+        "with_enterprise",
+    ]
+]
+
+sh_test(
+    name = "license_coverage_test",
+    srcs = ["verify_coverage.sh"],
+    data = [
+        ":oss_only_sbom",
+        ":with_enterprise_sbom",
+    ],
+)
