@@ -13,21 +13,21 @@ GIT_COMMIT = "df3e61f82ee285763f3ed5cbfc0fab1fedd976ec"
 git_override(
     module_name = "package_metadata",
     commit = GIT_COMMIT,
-    remote = "https://github.com/darkrift/supply-chain.git",
+    remote = "https://github.com/bazel-contrib/supply-chain.git",
     strip_prefix = "metadata",
 )
 
 git_override(
     module_name = "supply_chain_tools",
     commit = GIT_COMMIT,
-    remote = "https://github.com/darkrift/supply-chain.git",
+    remote = "https://github.com/bazel-contrib/supply-chain.git",
     strip_prefix = "tools",
 )
 
 git_override(
     module_name = "supply-chain-go",
     commit = GIT_COMMIT,
-    remote = "https://github.com/darkrift/supply-chain.git",
+    remote = "https://github.com/bazel-contrib/supply-chain.git",
     strip_prefix = "lib/supplychain-go",
 )
 
