@@ -53,12 +53,28 @@ def _impl(ctx):
         fail("failed to resolve the gazelle source dir: " + resolved.stderr)
     gazelle_dir = resolved.stdout.strip()
     plugin = ctx.path(Label("//:language.go"))
+    detect = ctx.path(Label("//:detect.go"))
     ctx.watch(plugin)
+    ctx.watch(detect)
+
+    # The plugin needs licensecheck, which Gazelle's go.mod doesn't list, so
+    # build with an extended copy of the module files; -mod=mod bypasses
+    # Gazelle's vendor directory, which doesn't contain it.
+    needs = {
+        "github.com/google/licensecheck": "v0.3.1",
+        "github.com/google/licenseclassifier/v2": "v2.0.0",
+        "github.com/davecgh/go-spew": "v1.1.1",
+        "github.com/sergi/go-diff": "v1.1.0",
+    }
+    ctx.file("overlay.mod", ctx.read(gazelle_dir + "/go.mod") + "\n" + "".join(["require %s %s\n" % kv for kv in needs.items()]))
+    sums = [l for l in ctx.read(Label("//:go.sum")).splitlines() if l.split(" ")[0] in needs]
+    ctx.file("overlay.sum", ctx.read(gazelle_dir + "/go.sum") + "\n".join(sums) + "\n")
 
     ctx.file("overlay/langs.go", _LANGS)
     ctx.file("overlay.json", json.encode({"Replace": {
         gazelle_dir + "/cmd/gazelle/langs.go": str(ctx.path("overlay/langs.go")),
         gazelle_dir + "/language/license/language.go": str(plugin),
+        gazelle_dir + "/language/license/detect.go": str(detect),
     }}))
 
     for tool in ["gazelle", "fetch_repo", "generate_repo_config"]:
@@ -68,6 +84,9 @@ def _impl(ctx):
                 "build",
                 "-overlay",
                 str(ctx.path("overlay.json")),
+                "-mod=mod",
+                "-modfile",
+                str(ctx.path("overlay.mod")),
                 "-o",
                 str(ctx.path("bin/" + tool)),
                 "./cmd/" + tool,

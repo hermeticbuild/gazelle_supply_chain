@@ -46,11 +46,18 @@ go_deps.from_file(go_mod = "//:go.mod")
 # build_directives would overwrite BuildBuddy's root BUILD file:
 #   -license_default  - license of every package in the module
 #   -license_subtree  - dir=label, a different license for a directory and below
+# -license_strict makes Gazelle fail on a LICENSE file that is undeclared or
+# that doesn't match its declared SPDX id. BuildBuddy's root LICENSE is MIT plus
+# a carve-out for enterprise/, which only matches MIT at ~67%, hence the lower
+# licensecheck confidence, applied to that one file. enterprise/LICENSE has no
+# SPDX text, so its declaration uses a LicenseRef- id.
 go_deps.gazelle_override(
     build_extra_args = [
         "-lang=license",
-        "-license_default=@@//licenses:buildbuddy_mit",
-        "-license_subtree=enterprise=@@//licenses:buildbuddy_enterprise",
+        "-license_strict",
+        "-license_confidence=licensecheck=65 LICENSE",
+        "-license_default=@@//licenses:buildbuddy_mit MIT",
+        "-license_subtree=enterprise=@@//licenses:buildbuddy_enterprise LicenseRef-BuildBuddy-Enterprise",
     ],
     build_file_generation = "on",
     path = "github.com/buildbuddy-io/buildbuddy",

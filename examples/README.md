@@ -11,8 +11,13 @@ generated package with the license of the subtree it lives in.
 2. `go_deps.gazelle_override` runs Gazelle with only the license language
    (`-lang=license`) and these flags, so BuildBuddy's own BUILD files are kept and
    just get one `package(default_applicable_licenses = ...)` call appended:
-   - `-license_default=@@//licenses:buildbuddy_mit`
-   - `-license_subtree=enterprise=@@//licenses:buildbuddy_enterprise`
+   - `-license_default="@@//licenses:buildbuddy_mit MIT"`
+   - `-license_subtree="enterprise=@@//licenses:buildbuddy_enterprise LicenseRef-BuildBuddy-Enterprise"`
+   - `-license_strict` with `-license_confidence="licensecheck=65 LICENSE"` (only for the root LICENSE): Gazelle fails if a
+     LICENSE file is undeclared or doesn't contain the declared SPDX id. The root
+     LICENSE is MIT plus a carve-out for `enterprise/`, which only matches MIT at
+     about 67%; `enterprise/LICENSE` is custom, so it is declared with a
+     `LicenseRef-` id.
 
    Flags are used instead of `build_directives` because `go_repository` writes
    directives over the root BUILD file.
