@@ -41,6 +41,20 @@ By default: `LICENSE`, `LICENCE`, `COPYING` and `UNLICENSE`, plus `.txt`, `.md` 
 
 `license_files` replaces the list for the directory and below. Names are case-insensitive globs, separated by spaces or commas, and `default` stands for the standard list. As a flag: `-license_files="default NOTICE"`.
 
+### Generated license targets
+
+The plugin never invents a package identity. Next to each scanned license file, in the directory where the declaration was made, it writes one `license()` named `gazelle_generated_license` (or `gazelle_generated_license_<file suffix>`) with `text` set to that file, plus a `license_kind()` for a `LicenseRef-` id.
+
+Target names are always `gazelle_generated_` followed by a suffix:
+
+- `license()`: `gazelle_generated_<suffix>`, where `<suffix>` is the license file name lowercased, with every character that isn't `a-z` or `0-9` replaced by `_`, and leading and trailing `_` trimmed. `LICENSE` gives `gazelle_generated_license`, `LICENSE.txt` gives `gazelle_generated_license_txt`, `LICENSE-APACHE` gives `gazelle_generated_license_apache`, and `COPYING` gives `gazelle_generated_copying`. If the directory has no matching file, a single `gazelle_generated_license` is written without `text`.
+- `license_kind()` (only for `LicenseRef-` ids): `gazelle_generated_kind`.
+- `package_metadata()` (only when created, see below): the name in the declared label, for example `package_metadata` in `//enterprise:package_metadata`.
+
+The declared label must name a `package_metadata`. If it already exists (for example the `//_gazelle_generated:package_metadata` that `go_repository` writes before running Gazelle), the licenses are appended to its `attributes` and its `purl` is kept. If it doesn't exist and the declaration was made in that package, one is created with the purl of the repository's generated metadata plus `#<package>` as subpath (fallback `pkg:golang/<gazelle:prefix>`). Otherwise nothing is generated. The repo needs `@package_metadata` visible. Every package except `_gazelle_generated` gets `package(default_applicable_licenses = [label])`.
+
+This requires a `go_repository` that writes its metadata before Gazelle runs.
+
 ### Detectors and confidence
 
 Two detectors are available and you pick one:

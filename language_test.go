@@ -222,3 +222,30 @@ func TestFilesDirectiveAndFlag(t *testing.T) {
 		t.Fatalf("directive not inherited: %v", f)
 	}
 }
+
+func TestLocalTarget(t *testing.T) {
+	for _, tc := range []struct {
+		label, rel, pkg, name string
+		ok                    bool
+	}{
+		{"//:mit", "x", "", "mit", true},
+		{"//_gazelle_generated:package_metadata", "", "_gazelle_generated", "package_metadata", true},
+		{"//ent:mit", "", "ent", "mit", true},
+		{":mit", "ent", "ent", "mit", true},
+		{"@@//licenses:mit", "", "", "", false},
+		{"@lic//:mit", "", "", "", false},
+	} {
+		pkg, name, ok := localTarget(tc.label, tc.rel)
+		if pkg != tc.pkg || name != tc.name || ok != tc.ok {
+			t.Errorf("localTarget(%q, %q) = %q, %q, %v", tc.label, tc.rel, pkg, name, ok)
+		}
+	}
+}
+
+func TestLicenseSuffix(t *testing.T) {
+	for in, want := range map[string]string{"LICENSE": "license", "LICENSE.txt": "license_txt", "COPYING": "copying"} {
+		if got := licenseSuffix(in); got != want {
+			t.Errorf("licenseSuffix(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

@@ -11,14 +11,14 @@ flat() { tr -d ' \n' < "$1"; }
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
-flat "$ent" | grep -q 'enterprise/server/util/fieldgetter:fieldgetter","metadata_file":"[^"]*buildbuddy_enterprise.package-metadata.json"' ||
+flat "$ent" | grep -q 'enterprise/server/util/fieldgetter:fieldgetter","metadata_file":"[^"]*enterprise/package_metadata.package-metadata.json"' ||
   fail "enterprise/ package is not covered by the enterprise license"
-flat "$ent" | grep -q 'server/util/random:random","metadata_file":"[^"]*buildbuddy_mit.package-metadata.json"' ||
+flat "$ent" | grep -q 'server/util/random:random","metadata_file":"[^"]*_gazelle_generated/package_metadata.package-metadata.json"' ||
   fail "non-enterprise package is not covered by the MIT license"
 
-flat "$oss" | grep -q 'server/util/random:random","metadata_file":"[^"]*buildbuddy_mit.package-metadata.json"' ||
+flat "$oss" | grep -q 'server/util/random:random","metadata_file":"[^"]*_gazelle_generated/package_metadata.package-metadata.json"' ||
   fail "oss_only: non-enterprise package is not covered by the MIT license"
-if flat "$oss" | grep -q 'buildbuddy_enterprise'; then
+if flat "$oss" | grep -q "enterprise/package_metadata"; then
   fail "oss_only must not pull in the enterprise license"
 fi
 echo "PASS"

@@ -97,6 +97,10 @@ const (
 	noneValue           = "none"
 	packageKind         = "package"
 	attrName            = "default_applicable_licenses"
+	metadataModule      = "package_metadata"
+	licenseKind         = "license"
+	licenseKindKind     = "license_kind"
+	metadataKind        = "package_metadata"
 )
 
 type licenseLang struct {
@@ -218,12 +222,15 @@ func (l *licenseLang) CheckFlags(fs *flag.FlagSet, c *config.Config) error {
 		cfg.setConfidence(name, pct, file, "")
 	}
 	cfg.declared = parseDeclared(l.flagDefault)
+	cfg.owner = ""
 	for _, v := range l.flagSubtrees {
 		dir, rest, _ := strings.Cut(v, "=")
 		if cfg.subtrees == nil {
 			cfg.subtrees = map[string]declared{}
 		}
-		cfg.subtrees[path.Clean(dir)] = parseDeclared(rest)
+		d := parseDeclared(rest)
+		d.owner = path.Clean(dir)
+		cfg.subtrees[d.owner] = d
 	}
 	c.Exts[languageName] = cfg
 	return nil
@@ -244,6 +251,9 @@ func (*licenseLang) KnownDirectives() []string {
 type declared struct {
 	target string
 	spdx   string
+	// owner is the repo-relative directory the declaration was made for: the
+	// license files found there are described by target.
+	owner string
 }
 
 // parseDeclared reads "label [spdx]"; "none" or an empty value clears it.
@@ -278,6 +288,9 @@ type licenseConfig struct {
 	// fileConfidence overrides confidence for one file, keyed by its
 	// repo-relative path and then by detector.
 	fileConfidence map[string]map[string]float64
+	// prefix is the Go import path of the repository root (from the
+	// `gazelle:prefix` directive), used to build the purl of generated metadata.
+	prefix string
 	// explicit is set when this directory itself is covered by a declaration:
 	// a subtree entry, or a license_default written in its own BUILD file.
 	// It is not inherited.
@@ -342,7 +355,10 @@ func (*licenseLang) Configure(c *config.Config, rel string, f *rule.File) {
 			switch d.Key {
 			case directive:
 				cfg.declared = parseDeclared(d.Value)
+				cfg.owner = rel
 				cfg.explicit = cfg.target != ""
+			case "prefix":
+				cfg.prefix = strings.TrimSpace(d.Value)
 			case filesDir:
 				cfg.files = parseFiles(d.Value)
 			case strictDir:
@@ -382,7 +398,9 @@ func (*licenseLang) Configure(c *config.Config, rel string, f *rule.File) {
 				if fields[1] == noneValue {
 					delete(subtrees, dir)
 				} else {
-					subtrees[dir] = parseDeclared(strings.Join(fields[1:], " "))
+					d := parseDeclared(strings.Join(fields[1:], " "))
+					d.owner = dir
+					subtrees[dir] = d
 				}
 				cfg.subtrees = subtrees
 			}
@@ -516,7 +534,47 @@ func (*licenseLang) Kinds() map[string]rule.KindInfo {
 			MatchAny:       true,
 			MergeableAttrs: map[string]bool{attrName: true},
 		},
+		licenseKind: {
+			NonEmptyAttrs:  map[string]bool{"kind": true},
+			MergeableAttrs: map[string]bool{"kind": true, "text": true},
+		},
+		licenseKindKind: {
+			NonEmptyAttrs:  map[string]bool{"identifier": true},
+			MergeableAttrs: map[string]bool{"identifier": true, "full_name": true},
+		},
+		// Only attributes is merged: an existing package_metadata keeps its purl.
+		metadataKind: {
+			MergeableAttrs: map[string]bool{"attributes": true},
+		},
 	}
+}
+
+func (*licenseLang) ApparentLoads(moduleToApparentName func(string) string) []rule.LoadInfo {
+	repo := moduleToApparentName(metadataModule)
+	if repo == "" {
+		repo = metadataModule
+	}
+	return []rule.LoadInfo{
+		{Name: "@" + repo + "//licenses/rules:license.bzl", Symbols: []string{licenseKind}},
+		{Name: "@" + repo + "//licenses/rules:license_kind.bzl", Symbols: []string{licenseKindKind}},
+		{Name: "@" + repo + "//rules:package_metadata.bzl", Symbols: []string{metadataKind}},
+	}
+}
+
+// localTarget reports the package and name of a label that lives in the
+// repository being scanned (`//pkg:name` or `:name`, with no repository part).
+func localTarget(label, rel string) (pkg, name string, ok bool) {
+	switch {
+	case strings.HasPrefix(label, "//"):
+		pkg, name, _ = strings.Cut(label[2:], ":")
+		if name == "" {
+			name = path.Base(pkg)
+		}
+		return pkg, name, true
+	case strings.HasPrefix(label, ":"):
+		return rel, label[1:], true
+	}
+	return "", "", false
 }
 
 func (*licenseLang) GenerateRules(args language.GenerateArgs) language.GenerateResult {
@@ -524,10 +582,175 @@ func (*licenseLang) GenerateRules(args language.GenerateArgs) language.GenerateR
 	if cfg.target == "" {
 		return language.GenerateResult{}
 	}
-	r := rule.NewRule(packageKind, "")
-	r.SetAttr(attrName, []string{cfg.target})
-	return language.GenerateResult{
-		Gen:     []*rule.Rule{r},
-		Imports: []interface{}{nil},
+	var res language.GenerateResult
+	add := func(r *rule.Rule) {
+		res.Gen = append(res.Gen, r)
+		res.Imports = append(res.Imports, nil)
 	}
+	// The package go_repository writes its own metadata to must not point at itself.
+	if args.Rel != generatedDir {
+		r := rule.NewRule(packageKind, "")
+		r.SetAttr(attrName, []string{cfg.target})
+		add(r)
+	}
+	pkg, name, local := localTarget(cfg.target, cfg.owner)
+	if !local || cfg.spdx == "" {
+		return res
+	}
+	// One license() per license file, next to the file, since license.text
+	// takes a single file.
+	if args.Rel == cfg.owner {
+		kind := "@" + metadataModule + "//licenses/spdx:" + cfg.spdx
+		if strings.HasPrefix(cfg.spdx, customLicensePrefix) {
+			k := rule.NewRule(licenseKindKind, generatedPrefix+"kind")
+			k.SetAttr("identifier", cfg.spdx)
+			k.SetAttr("full_name", strings.TrimPrefix(cfg.spdx, customLicensePrefix))
+			add(k)
+			kind = ":" + k.Name()
+		}
+		files := licenseFiles(cfg, args.RegularFiles)
+		if len(files) == 0 {
+			files = []string{""}
+		}
+		for _, f := range files {
+			l := rule.NewRule(licenseKind, licenseTarget(f))
+			l.SetAttr("kind", kind)
+			if f != "" {
+				l.SetAttr("text", f)
+			}
+			add(l)
+		}
+	}
+	if args.Rel != pkg {
+		return res
+	}
+	// The license() targets are attached to the package_metadata the label
+	// names. An existing one (go_repository generates it) keeps its purl and
+	// gets the licenses added; otherwise it is created, with the purl of the
+	// repository's own package_metadata and this directory as its subpath.
+	var attrs []string
+	for _, f := range ownerLicenseFiles(cfg, args) {
+		attrs = append(attrs, ownerLabel(cfg.owner, licenseTarget(f)))
+	}
+	if len(attrs) == 0 {
+		attrs = append(attrs, ownerLabel(cfg.owner, licenseTarget("")))
+	}
+	m := rule.NewRule(metadataKind, name)
+	if existing := findRule(args.File, metadataKind, name); existing != nil {
+		attrs = union(existing.AttrStrings("attributes"), attrs)
+	} else if args.Rel == cfg.owner {
+		m.SetAttr("purl", purl(cfg, args))
+		m.SetAttr("visibility", []string{"//visibility:public"})
+	} else {
+		return res
+	}
+	m.SetAttr("attributes", attrs)
+	add(m)
+	return res
+}
+
+const (
+	generatedDir    = "_gazelle_generated"
+	generatedPrefix = "gazelle_generated_"
+)
+
+// licenseTarget names the license() generated for a file: LICENSE becomes
+// gazelle_generated_license, LICENSE.txt gazelle_generated_license_txt.
+func licenseTarget(file string) string {
+	if file == "" {
+		return generatedPrefix + "license"
+	}
+	return generatedPrefix + licenseSuffix(file)
+}
+
+func licenseFiles(cfg *licenseConfig, names []string) []string {
+	var files []string
+	for _, f := range names {
+		if isLicenseFile(cfg.files, f) {
+			files = append(files, f)
+		}
+	}
+	sort.Strings(files)
+	return files
+}
+
+// ownerLicenseFiles lists the license files of the declaration's own
+// directory, which may be a different one than the directory being generated.
+func ownerLicenseFiles(cfg *licenseConfig, args language.GenerateArgs) []string {
+	if args.Rel == cfg.owner {
+		return licenseFiles(cfg, args.RegularFiles)
+	}
+	entries, err := os.ReadDir(filepath.Join(args.Config.RepoRoot, filepath.FromSlash(cfg.owner)))
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, e := range entries {
+		if e.Type().IsRegular() {
+			names = append(names, e.Name())
+		}
+	}
+	return licenseFiles(cfg, names)
+}
+
+func ownerLabel(owner, name string) string {
+	return "//" + owner + ":" + name
+}
+
+func findRule(f *rule.File, kind, name string) *rule.Rule {
+	if f == nil {
+		return nil
+	}
+	for _, r := range f.Rules {
+		if r.Kind() == kind && r.Name() == name {
+			return r
+		}
+	}
+	return nil
+}
+
+func union(a, b []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, s := range append(append([]string{}, a...), b...) {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// licenseSuffix turns a file name into a target name part: LICENSE becomes
+// "license" and LICENSE.txt "license_txt".
+func licenseSuffix(file string) string {
+	return strings.Trim(strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
+			return r
+		}
+		return '_'
+	}, strings.ToLower(file)), "_")
+}
+
+// purl is the repository's own purl (from the package_metadata go_repository
+// generated, so it carries the module version) with the directory appended as
+// the subpath. Without it, the purl is built from the gazelle:prefix.
+func purl(cfg *licenseConfig, args language.GenerateArgs) string {
+	base := ""
+	if f, err := rule.LoadFile(filepath.Join(args.Config.RepoRoot, generatedDir, "BUILD.bazel"), generatedDir); err == nil {
+		if r := findRule(f, metadataKind, "package_metadata"); r != nil {
+			base = r.AttrString("purl")
+		}
+	}
+	if base == "" {
+		if cfg.prefix == "" {
+			base = "pkg:generic/" + args.Config.RepoName
+		} else {
+			base = "pkg:golang/" + cfg.prefix
+		}
+	}
+	if args.Rel != "" {
+		base += "#" + args.Rel
+	}
+	return base
 }

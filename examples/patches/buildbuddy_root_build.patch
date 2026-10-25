@@ -1,0 +1,14 @@
+diff -ru a/BUILD b/BUILD
+--- a/BUILD	2026-10-25 16:19:35
++++ b/BUILD	2026-10-25 16:19:36
+@@ -29,8 +29,8 @@
+ filegroup(
+     name = "config_files",
+     srcs = select({
+-        ":release_build": ["config/buildbuddy.release.yaml"],
+-        "//conditions:default": glob(["config/**"]),
++        ":release_build": ["//config:buildbuddy.release.yaml"],
++        "//conditions:default": glob(["config/**"], allow_empty = True),
+     }),
+ )
+ 

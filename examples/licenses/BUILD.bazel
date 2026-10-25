@@ -1,42 +1,7 @@
 load("@package_metadata//licenses/rules:license.bzl", "license")
-load("@package_metadata//licenses/rules:license_kind.bzl", "license_kind")
 load("@package_metadata//rules:package_metadata.bzl", "package_metadata")
 
 package(default_visibility = ["//visibility:public"])
-
-# BuildBuddy's LICENSE: MIT everywhere except the carve-outs it lists.
-license(
-    name = "buildbuddy_mit_license",
-    kind = "@package_metadata//licenses/spdx:MIT",
-    text = "BUILDBUDDY_LICENSE",
-)
-
-# enterprise/LICENSE has no SPDX id, so it needs a custom kind.
-license_kind(
-    name = "buildbuddy_enterprise_kind",
-    full_name = "The BuildBuddy Enterprise license",
-    identifier = "LicenseRef-BuildBuddy-Enterprise",
-)
-
-license(
-    name = "buildbuddy_enterprise_license",
-    kind = ":buildbuddy_enterprise_kind",
-    text = "BUILDBUDDY_ENTERPRISE_LICENSE",
-)
-
-# Referenced from the Gazelle directives in MODULE.bazel; every package of the
-# BuildBuddy module gets one of these two as its default_package_metadata.
-package_metadata(
-    name = "buildbuddy_mit",
-    attributes = [":buildbuddy_mit_license"],
-    purl = "pkg:golang/github.com/buildbuddy-io/buildbuddy@v1.9.2",
-)
-
-package_metadata(
-    name = "buildbuddy_enterprise",
-    attributes = [":buildbuddy_enterprise_license"],
-    purl = "pkg:golang/github.com/buildbuddy-io/buildbuddy@v1.9.2#enterprise",
-)
 
 # The example's own code.
 license(
