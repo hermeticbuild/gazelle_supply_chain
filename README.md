@@ -59,10 +59,10 @@ This requires a `go_repository` that writes its metadata before Gazelle runs.
 
 Two detectors are available and you pick one:
 
-| Detector | How it decides | Default confidence |
-|---|---|---|
-| `licensecheck` (default) | share of the file's words covered by SPDX license texts | 90 |
-| `licenseclassifier` | match confidence; the matches must also cover that share of the file's lines | 80 (also the minimum) |
+| Detector | How it decides | Default confidence | Dependency |
+|---|---|---|---|
+| `licensecheck` (default) | share of the file's words covered by SPDX license texts | 90 | [github.com/google/licensecheck](https://github.com/google/licensecheck) |
+| `licenseclassifier` | match confidence; the matches must also cover that share of the file's lines | 80 (also the minimum) | [github.com/google/licenseclassifier](https://github.com/google/licenseclassifier) |
 
 ```starlark
 # gazelle:license_detector licenseclassifier
