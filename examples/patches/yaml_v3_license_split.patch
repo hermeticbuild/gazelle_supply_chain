@@ -1,0 +1,63 @@
+--- a/BUILD.bazel
++++ b/BUILD.bazel
+@@ -1,23 +1,18 @@
+ load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
+ load("@package_metadata//licenses/rules:license.bzl", "license")
++load("@package_metadata//rules:package_metadata.bzl", "package_metadata")
+ 
+ go_library(
+     name = "yaml",
+     srcs = [
+-        "apic.go",
+         "decode.go",
+-        "emitterc.go",
+         "encode.go",
+-        "parserc.go",
+-        "readerc.go",
+         "resolve.go",
+-        "scannerc.go",
+         "sorter.go",
+-        "writerc.go",
+         "yaml.go",
+-        "yamlh.go",
+-        "yamlprivateh.go",
++        ":mit_srcs",
+     ],
++    package_metadata = [":apache_metadata"],
+     importpath = "go.yaml.in/yaml/v3",
+     importpath_aliases = ["go.yaml.in/yaml"],
+     visibility = ["//visibility:public"],
+@@ -54,3 +49,33 @@
+     text = "LICENSE",
+     visibility = ["//visibility:public"],
+ )
++
++# Only these files, ported from libyaml, are MIT; the rest of the module is
++# Apache-2.0. The library keeps Apache-2.0 for its own sources and gets MIT
++# through this filegroup.
++filegroup(
++    name = "mit_srcs",
++    srcs = [
++        "apic.go",
++        "emitterc.go",
++        "parserc.go",
++        "readerc.go",
++        "scannerc.go",
++        "writerc.go",
++        "yamlh.go",
++        "yamlprivateh.go",
++    ],
++    package_metadata = [":mit_metadata"],
++)
++
++package_metadata(
++    name = "apache_metadata",
++    attributes = [":gazelle_generated_license_apache_2_0"],
++    purl = "pkg:golang/go.yaml.in/yaml/v3@v3.0.5",
++)
++
++package_metadata(
++    name = "mit_metadata",
++    attributes = [":gazelle_generated_license_mit"],
++    purl = "pkg:golang/go.yaml.in/yaml/v3@v3.0.5#mit",
++)

@@ -100,8 +100,10 @@ def _impl(ctx):
     gazelle_dir = resolved.stdout.strip()
     plugin = ctx.path(Label("//:language.go"))
     detect = ctx.path(Label("//:detect.go"))
+    files = ctx.path(Label("//:files.go"))
     ctx.watch(plugin)
     ctx.watch(detect)
+    ctx.watch(files)
 
     # The plugin needs licensecheck, which Gazelle's go.mod doesn't list, so
     # build with an extended copy of the module files; -mod=mod bypasses
@@ -134,6 +136,7 @@ def _impl(ctx):
         gazelle_dir + "/cmd/gazelle/langs.go": str(ctx.path("overlay/langs.go")),
         gazelle_dir + "/language/license/language.go": str(plugin),
         gazelle_dir + "/language/license/detect.go": str(detect),
+        gazelle_dir + "/language/license/files.go": str(files),
     }}))
 
     for tool in ["gazelle", "fetch_repo", "generate_repo_config"]:

@@ -121,7 +121,7 @@ func TestStrictSubdirNeedsSubtree(t *testing.T) {
 		t.Fatalf("ent config = %+v", cfg)
 	}
 	// Without the subtree, the root default alone must not cover ent/LICENSE.
-	cfg := licenseConfig{declared: declared{target: "//:mit", spdx: "MIT"}, strict: true}
+	cfg := licenseConfig{declared: declared{target: "//:mit", spdx: "MIT"}, strict: strictFull}
 	if err := checkDir(filepath.Join(root, "ent"), "ent", &cfg); err == nil {
 		t.Fatal("expected an error for an undeclared subdirectory license")
 	}

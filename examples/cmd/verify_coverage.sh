@@ -1,6 +1,7 @@
 #!/bin/bash
 # Asserts that each SBOM graph maps BuildBuddy code to the license of the
 # subtree it lives in: enterprise/ -> enterprise license, everything else -> MIT.
+# Mattermost's server module is reported as AGPL-3.0-only.
 set -euo pipefail
 
 oss="$(find -L . -name oss_only_sbom.graph.json | head -1)"
@@ -21,4 +22,7 @@ flat "$oss" | grep -q 'server/util/random:random","metadata_file":"[^"]*_gazelle
 if flat "$oss" | grep -q "enterprise/package_metadata"; then
   fail "oss_only must not pull in the enterprise license"
 fi
+mm="$(find -L . -name mattermost.spdx.json | head -1)"
+flat "$mm" | grep -q '"name":"v8"[^}]*"licenseDeclared":"AGPL-3.0-only"' ||
+  fail "mattermost server code is not reported as AGPL-3.0-only"
 echo "PASS"

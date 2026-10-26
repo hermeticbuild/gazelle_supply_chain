@@ -28,7 +28,12 @@ generated package with the license of the subtree it lives in.
 4. `//cmd` has two binaries plus SBOM targets for each (`*_sbom`, `*_spdx`, `*_cyclonedx`):
    - `oss_only` uses `server/util/random` -> MIT only.
    - `with_enterprise` also uses `enterprise/server/util/fieldgetter` -> enterprise license too.
-5. `//cmd:license_coverage_test` asserts that mapping from the SBOM graphs.
+5. `//cmd:mattermost` depends on Mattermost's server module (`platform/shared/mfa`), which has no BUILD files
+   either. Its module zip leaves out the repository's root `LICENSE.txt`, so `MODULE.bazel` declares it as
+   AGPL-3.0-only, plus a `LicenseRef-Mattermost-Enterprise` subtree for `enterprise/`. The root
+   `LICENSE.enterprise` symlink is not used: it only points at `server/enterprise/LICENSE`. The SBOM reports `v8` as
+   AGPL-3.0-only, with its dependencies detected from their own license files. This needs Go 1.26 (`go_sdk.download`).
+6. `//cmd:license_coverage_test` asserts that mapping from the SBOM graphs and the AGPL declaration.
 
 ```
 bazel test //cmd:license_coverage_test
@@ -52,5 +57,11 @@ bazel build //cmd:with_enterprise_spdx
   `enterprise/`, purl subpath `#enterprise`). Nothing is copied. A small patch fixes BuildBuddy's root `BUILD`
   (a `config/` label that doesn't load as shipped).
 - The tools repo is built with the host `go`.
-- The SPDX/CycloneDX writers don't emit license fields yet; the license
-  mapping is visible in `*_sbom.graph.json` and `*_sbom.sbom-classifications.json`.
+- The SBOM comes from a `supply-chain` branch that emits license information:
+  `bazel build //cmd:with_enterprise_spdx` then read `bazel-bin/cmd/with_enterprise.spdx.json`.
+  `enterprise/` is `LicenseRef-BuildBuddy-Enterprise` (its text is embedded in
+  `hasExtractedLicensingInfos`) and the rest of BuildBuddy is `MIT`. The mapping
+  is also in `*_sbom.graph.json` and `*_sbom.sbom-classifications.json`.
+- Every other Go module gets the plugin through `go_deps.gazelle_default_attributes`
+  with `-license_default="//_gazelle_generated:package_metadata detect"`, so
+  gRPC, protobuf and the others carry the license read from their own LICENSE file.

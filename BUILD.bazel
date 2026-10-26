@@ -5,6 +5,7 @@ go_library(
     name = "gazelle_supply_chain",
     srcs = [
         "detect.go",
+        "files.go",
         "language.go",
     ],
     importpath = "github.com/hermeticbuild/gazelle_supply_chain",
@@ -23,6 +24,7 @@ go_test(
     name = "gazelle_supply_chain_test",
     srcs = [
         "detect_test.go",
+        "files_test.go",
         "language_test.go",
     ],
     embed = [":gazelle_supply_chain"],
@@ -47,5 +49,6 @@ gazelle(
 
 exports_files([
     "detect.go",
+    "files.go",
     "language.go",
 ])

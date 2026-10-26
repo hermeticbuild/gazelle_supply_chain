@@ -5,8 +5,10 @@ import (
 	"fmt"
 
 	"github.com/buildbuddy-io/buildbuddy/server/util/random"
+	"github.com/buildbuddy-io/buildbuddy/server/util/status"
 )
 
 func main() {
-	fmt.Println(random.RandomString(8))
+	str, _ := random.RandomString(8)
+	fmt.Println(str, status.NotFoundError("example"))
 }

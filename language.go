@@ -25,11 +25,16 @@
 // A target may be followed by the SPDX identifier it stands for, for example
 // `# gazelle:license_default //:mit MIT`.
 //
-// Strict mode makes Gazelle fail instead of guessing about LICENSE files:
+// Strictness has three levels, set with the license_strict directive or the
+// -license_strict flag:
 //
-//	# gazelle:license_strict true
+//	# gazelle:license_strict true      full enforcement (the default)
+//	# gazelle:license_strict relaxed   only declarations contradicting the files fail
+//	# gazelle:license_strict false     no enforcement
 //
-// In strict mode every LICENSE/COPYING file Gazelle finds must match a standard
+// In relaxed mode a license that can't be determined (no license file, none
+// declared, no standard match) is left out, so reports show NOASSERTION and
+// concluding a license is up to the report tooling. In full mode every LICENSE/COPYING file Gazelle finds must match a standard
 // SPDX license text, must be covered by an explicit declaration (license_default
 // at the repository root, license_subtree or a local license_default in a
 // subdirectory), and a declaration that names an SPDX identifier must agree with
@@ -78,6 +83,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/bazelbuild/bazel-gazelle/config"
 	"github.com/bazelbuild/bazel-gazelle/language"
@@ -90,27 +96,35 @@ const (
 	subtreeDir   = "license_subtree"
 	strictDir    = "license_strict"
 	filesDir     = "license_files"
+	symlinksDir  = "license_follow_symlinks"
 	detectorDir  = "license_detector"
 	confDir      = "license_confidence"
 
 	customLicensePrefix = "LicenseRef-"
 	noneValue           = "none"
-	packageKind         = "package"
-	attrName            = "default_applicable_licenses"
-	metadataModule      = "package_metadata"
-	licenseKind         = "license"
-	licenseKindKind     = "license_kind"
-	metadataKind        = "package_metadata"
+	// detectValue stands in for the SPDX id of a declaration: the id is read
+	// from the license files found next to the declaration instead.
+	detectValue     = "detect"
+	packageKind     = "package"
+	attrName        = "default_applicable_licenses"
+	metadataModule  = "package_metadata"
+	licenseKind     = "license"
+	licenseKindKind = "license_kind"
+	metadataKind    = "package_metadata"
 )
 
 type licenseLang struct {
 	language.BaseLang
 	flagDefault  string
 	flagSubtrees subtreeFlag
-	flagStrict   bool
+	flagStrict   strictFlag
+	flagFollow   bool
 	flagFiles    string
 	flagDetector detectorFlag
 	flagConf     confFlag
+
+	mu    sync.Mutex
+	decls map[string]*declaration
 }
 
 // detectorFlag collects repeated -license_detector="name [file]" values.
@@ -199,11 +213,13 @@ func (l *licenseLang) RegisterFlags(fs *flag.FlagSet, cmd string, c *config.Conf
 	fs.Var(&l.flagDetector, "license_detector", "name [file]: license detector, licensecheck (default) or licenseclassifier, for everything or for one file (repeatable)")
 	fs.Var(&l.flagConf, "license_confidence", "detector=percent: minimum confidence for a detector (repeatable)")
 	fs.StringVar(&l.flagFiles, "license_files", "", "license file names to scan, space or comma separated; `default` stands for the standard names")
-	fs.BoolVar(&l.flagStrict, "license_strict", false, "fail on unmatched, undeclared or mismatching LICENSE files")
+	fs.BoolVar(&l.flagFollow, "license_follow_symlinks", true, "follow symlinked license files to the real file")
+	l.flagStrict = strictFlag{strictFull}
+	fs.Var(&l.flagStrict, "license_strict", "enforcement: true (default), relaxed (only fail on declarations contradicting the license files) or false")
 }
 
 func (l *licenseLang) CheckFlags(fs *flag.FlagSet, c *config.Config) error {
-	cfg := &licenseConfig{strict: l.flagStrict}
+	cfg := &licenseConfig{strict: l.flagStrict.level, noSymlinks: !l.flagFollow}
 	if l.flagFiles != "" {
 		cfg.files = parseFiles(l.flagFiles)
 	}
@@ -244,7 +260,7 @@ func NewLanguage() language.Language {
 func (*licenseLang) Name() string { return languageName }
 
 func (*licenseLang) KnownDirectives() []string {
-	return []string{directive, subtreeDir, strictDir, detectorDir, confDir, filesDir}
+	return []string{directive, subtreeDir, strictDir, detectorDir, confDir, filesDir, symlinksDir}
 }
 
 // declared is a license target and, optionally, the SPDX id it stands for.
@@ -274,13 +290,15 @@ type licenseConfig struct {
 	declared
 	// subtrees maps a repo-relative directory to the license declared for it.
 	subtrees map[string]declared
-	// strict turns unmatched, undeclared or mismatching LICENSE files into errors.
-	strict bool
+	// strict is how much of the license files' state is enforced.
+	strict strictness
 	// detector selects the license detector; empty means licensecheck.
 	detector string
 	// files are the names (globs, case-insensitive) of the license files to
 	// scan; nil selects defaultLicenseFiles.
 	files []string
+	// noSymlinks ignores symlinked license files instead of following them.
+	noSymlinks bool
 	// fileDetector overrides detector for one file, keyed by repo-relative path.
 	fileDetector map[string]string
 	// confidence holds the minimum percentage chosen per detector.
@@ -347,7 +365,7 @@ func getConfig(c *config.Config) *licenseConfig {
 
 // Configure runs top-down, so each directory inherits its parent's setting
 // unless its own BUILD file carries the directive.
-func (*licenseLang) Configure(c *config.Config, rel string, f *rule.File) {
+func (l *licenseLang) Configure(c *config.Config, rel string, f *rule.File) {
 	cfg := *getConfig(c)
 	cfg.explicit = rel == "" && cfg.target != ""
 	if f != nil {
@@ -361,10 +379,16 @@ func (*licenseLang) Configure(c *config.Config, rel string, f *rule.File) {
 				cfg.prefix = strings.TrimSpace(d.Value)
 			case filesDir:
 				cfg.files = parseFiles(d.Value)
-			case strictDir:
+			case symlinksDir:
 				if v, err := strconv.ParseBool(strings.TrimSpace(d.Value)); err == nil {
-					cfg.strict = v
+					cfg.noSymlinks = !v
 				}
+			case strictDir:
+				level, err := parseStrictness(d.Value)
+				if err != nil {
+					log.Fatalf("gazelle license: license_strict: %v", err)
+				}
+				cfg.strict = level
 			case detectorDir:
 				name, file, err := parseDetector(d.Value)
 				if err != nil {
@@ -416,7 +440,12 @@ func (*licenseLang) Configure(c *config.Config, rel string, f *rule.File) {
 		}
 	}
 	c.Exts[languageName] = &cfg
-	if cfg.strict && c.RepoRoot != "" {
+	if cfg.owner == rel && cfg.spdx != "" {
+		if _, _, local := localTarget(cfg.target, rel); local {
+			l.register(rel, buildDeclaration(c.RepoRoot, rel, &cfg))
+		}
+	}
+	if cfg.strict != strictOff && c.RepoRoot != "" {
 		if err := checkDir(filepath.Join(c.RepoRoot, filepath.FromSlash(rel)), rel, &cfg); err != nil {
 			log.Fatalf("gazelle license: %v", err)
 		}
@@ -458,6 +487,75 @@ func isLicenseFile(names []string, file string) bool {
 	return false
 }
 
+// detectFile matches one license file of the directory rel (at dir on disk)
+// with the detector and confidence configured for it.
+func detectFile(dir, rel, name string, cfg *licenseConfig) (Detection, string, error) {
+	text, err := os.ReadFile(filepath.Join(dir, name))
+	if err != nil {
+		return Detection{}, "", err
+	}
+	detector := cfg.detector
+	if v, ok := cfg.fileDetector[path.Join(rel, name)]; ok {
+		detector = v
+	}
+	if detector == "" {
+		detector = DetectorLicenseCheck
+	}
+	minPercent := cfg.confidence[detector]
+	if v, ok := cfg.fileConfidence[path.Join(rel, name)][detector]; ok {
+		minPercent = v
+	}
+	det, err := Detect(detector, text, minPercent)
+	return det, detector, err
+}
+
+// strictness is how much Gazelle enforces about the license files it finds.
+type strictness int
+
+const (
+	// strictOff enforces nothing.
+	strictOff strictness = iota
+	// strictRelaxed only fails on a declaration that contradicts the license
+	// files. What can't be determined is left out of the report.
+	strictRelaxed
+	// strictFull also requires every license file to match a standard license
+	// and to be declared, and every detect declaration to find one.
+	strictFull
+)
+
+func parseStrictness(v string) (strictness, error) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "true", "strict", "on", "1", "":
+		return strictFull, nil
+	case "relaxed":
+		return strictRelaxed, nil
+	case "false", "off", "0":
+		return strictOff, nil
+	}
+	return strictOff, fmt.Errorf("want true, relaxed or false, got %q", v)
+}
+
+// strictFlag is the -license_strict flag. A bare -license_strict means true.
+type strictFlag struct{ level strictness }
+
+func (f *strictFlag) String() string {
+	switch f.level {
+	case strictRelaxed:
+		return "relaxed"
+	case strictFull:
+		return "true"
+	}
+	return "false"
+}
+
+func (f *strictFlag) Set(v string) error {
+	level, err := parseStrictness(v)
+	f.level = level
+	return err
+}
+
+func (*strictFlag) IsBoolFlag() bool { return true }
+
 // checkDir enforces strict mode for the license files in one directory.
 func checkDir(dir, rel string, cfg *licenseConfig) error {
 	entries, err := os.ReadDir(dir)
@@ -466,16 +564,21 @@ func checkDir(dir, rel string, cfg *licenseConfig) error {
 	}
 	var files []string
 	for _, e := range entries {
-		if e.Type().IsRegular() && isLicenseFile(cfg.files, e.Name()) {
+		if isFileOrFileLink(dir, e, cfg) && isLicenseFile(cfg.files, e.Name()) {
 			files = append(files, e.Name())
 		}
-	}
-	if len(files) == 0 {
-		return nil
 	}
 	where := rel
 	if where == "" {
 		where = "."
+	}
+	if len(files) == 0 {
+		// Nothing to detect from where a detect declaration was made: that is
+		// no license, not an unknown one, so it has to be declared by hand.
+		if cfg.strict == strictFull && cfg.spdx == detectValue && cfg.owner == rel {
+			return fmt.Errorf("%s has no license file to detect a license from; declare it explicitly, for example `%s LicenseRef-Unlicensed`", where, cfg.target)
+		}
+		return nil
 	}
 	// A LicenseRef-* id is an explicit declaration of a custom license, which
 	// has no SPDX text to match against.
@@ -484,26 +587,14 @@ func checkDir(dir, rel string, cfg *licenseConfig) error {
 	}
 	found := map[string]bool{}
 	for _, name := range files {
-		text, err := os.ReadFile(filepath.Join(dir, name))
-		if err != nil {
-			return err
-		}
-		detector := cfg.detector
-		if v, ok := cfg.fileDetector[path.Join(rel, name)]; ok {
-			detector = v
-		}
-		if detector == "" {
-			detector = DetectorLicenseCheck
-		}
-		minPercent := cfg.confidence[detector]
-		if v, ok := cfg.fileConfidence[path.Join(rel, name)][detector]; ok {
-			minPercent = v
-		}
-		det, err := Detect(detector, text, minPercent)
+		det, detector, err := detectFile(dir, rel, name, cfg)
 		if err != nil {
 			return err
 		}
 		if !det.Standard {
+			if cfg.strict == strictRelaxed {
+				continue
+			}
 			return fmt.Errorf("%s/%s does not match a standard license (%s confidence %.1f%%); it needs an explicit declaration through supply_chain_tools", where, name, detector, det.Percent)
 		}
 		for _, id := range det.IDs {
@@ -511,12 +602,22 @@ func checkDir(dir, rel string, cfg *licenseConfig) error {
 		}
 	}
 	if !cfg.explicit || cfg.target == "" {
+		if cfg.strict == strictRelaxed {
+			return nil
+		}
 		return fmt.Errorf("%s has a license file but no license_default or license_subtree declares its license", where)
 	}
+	if cfg.spdx == detectValue {
+		return nil
+	}
 	if cfg.spdx == "" {
+		if cfg.strict == strictRelaxed {
+			return nil
+		}
 		return fmt.Errorf("%s declares %s without an SPDX id, so it can't be checked against the license file; write `%s <spdx>`", where, cfg.target, cfg.target)
 	}
-	if !found[cfg.spdx] {
+	// Relaxed mode cannot tell a mismatch from a file it could not classify.
+	if !found[cfg.spdx] && (cfg.strict == strictFull || len(found) > 0) {
 		ids := make([]string, 0, len(found))
 		for id := range found {
 			ids = append(ids, id)
@@ -577,63 +678,55 @@ func localTarget(label, rel string) (pkg, name string, ok bool) {
 	return "", "", false
 }
 
-func (*licenseLang) GenerateRules(args language.GenerateArgs) language.GenerateResult {
+func (l *licenseLang) GenerateRules(args language.GenerateArgs) language.GenerateResult {
 	cfg := getConfig(args.Config)
-	if cfg.target == "" {
-		return language.GenerateResult{}
-	}
 	var res language.GenerateResult
 	add := func(r *rule.Rule) {
 		res.Gen = append(res.Gen, r)
 		res.Imports = append(res.Imports, nil)
 	}
-	// The package go_repository writes its own metadata to must not point at itself.
-	if args.Rel != generatedDir {
+	// One license() per license file, in the directory of the real file since
+	// license.text takes a single file of its own package. That is not the
+	// declaration's directory when the license file is a symlink.
+	specs, kindIDs := l.specsIn(args.Rel)
+	for _, id := range kindIDs {
+		add(customKind(id))
+	}
+	for _, sp := range specs {
+		r := rule.NewRule(licenseKind, sp.name)
+		r.SetAttr("kind", sp.kind)
+		// Referenced from the package_metadata, which may live in another package.
+		r.SetAttr("visibility", []string{"//visibility:public"})
+		if sp.file != "" {
+			r.SetAttr("text", sp.file)
+		}
+		add(r)
+	}
+	if cfg.target == "" {
+		return res
+	}
+	// The package go_repository writes its own metadata to must not point at
+	// itself. With `detect` the label is that metadata, which REPO.bazel
+	// already applies to every package, and tagging directories would create
+	// BUILD files that split packages such as testdata/.
+	if args.Rel != generatedDir && cfg.spdx != detectValue {
 		r := rule.NewRule(packageKind, "")
 		r.SetAttr(attrName, []string{cfg.target})
 		add(r)
 	}
 	pkg, name, local := localTarget(cfg.target, cfg.owner)
-	if !local || cfg.spdx == "" {
-		return res
-	}
-	// One license() per license file, next to the file, since license.text
-	// takes a single file.
-	if args.Rel == cfg.owner {
-		kind := "@" + metadataModule + "//licenses/spdx:" + cfg.spdx
-		if strings.HasPrefix(cfg.spdx, customLicensePrefix) {
-			k := rule.NewRule(licenseKindKind, generatedPrefix+"kind")
-			k.SetAttr("identifier", cfg.spdx)
-			k.SetAttr("full_name", strings.TrimPrefix(cfg.spdx, customLicensePrefix))
-			add(k)
-			kind = ":" + k.Name()
-		}
-		files := licenseFiles(cfg, args.RegularFiles)
-		if len(files) == 0 {
-			files = []string{""}
-		}
-		for _, f := range files {
-			l := rule.NewRule(licenseKind, licenseTarget(f))
-			l.SetAttr("kind", kind)
-			if f != "" {
-				l.SetAttr("text", f)
-			}
-			add(l)
-		}
-	}
-	if args.Rel != pkg {
+	d := l.declarationOf(cfg.owner)
+	if !local || cfg.spdx == "" || d == nil || args.Rel != pkg || len(d.specs) == 0 {
 		return res
 	}
 	// The license() targets are attached to the package_metadata the label
-	// names. An existing one (go_repository generates it) keeps its purl and
-	// gets the licenses added; otherwise it is created, with the purl of the
-	// repository's own package_metadata and this directory as its subpath.
+	// names, which covers the whole declaration even when a license() lives
+	// elsewhere. An existing one (go_repository generates it) keeps its purl
+	// and gets the licenses added; otherwise it is created, with the purl of
+	// the repository's own package_metadata and this directory as its subpath.
 	var attrs []string
-	for _, f := range ownerLicenseFiles(cfg, args) {
-		attrs = append(attrs, ownerLabel(cfg.owner, licenseTarget(f)))
-	}
-	if len(attrs) == 0 {
-		attrs = append(attrs, ownerLabel(cfg.owner, licenseTarget("")))
+	for _, sp := range d.specs {
+		attrs = append(attrs, "//"+sp.pkg+":"+sp.name)
 	}
 	m := rule.NewRule(metadataKind, name)
 	if existing := findRule(args.File, metadataKind, name); existing != nil {
@@ -649,6 +742,74 @@ func (*licenseLang) GenerateRules(args language.GenerateArgs) language.GenerateR
 	return res
 }
 
+// licenseSpec describes one license() to generate.
+type licenseSpec struct {
+	name string
+	// pkg is the directory the license() lives in, and file the license file
+	// there, empty when the declaration's directory has none.
+	pkg, file string
+	kind      string
+}
+
+// customKind is the license_kind of a LicenseRef- id.
+func customKind(id string) *rule.Rule {
+	r := rule.NewRule(licenseKindKind, generatedPrefix+"kind")
+	r.SetAttr("visibility", []string{"//visibility:public"})
+	r.SetAttr("identifier", id)
+	r.SetAttr("full_name", strings.TrimPrefix(id, customLicensePrefix))
+	return r
+}
+
+// buildDeclaration lists the license() targets of the declaration made in the
+// directory rel.
+func buildDeclaration(repoRoot, rel string, cfg *licenseConfig) *declaration {
+	files := findLicenseFiles(repoRoot, rel, cfg)
+	if cfg.spdx == detectValue {
+		return &declaration{specs: detectSpecs(repoRoot, rel, cfg, files)}
+	}
+	d := &declaration{}
+	kind := "@" + metadataModule + "//licenses/spdx:" + cfg.spdx
+	if strings.HasPrefix(cfg.spdx, customLicensePrefix) {
+		d.kindID = cfg.spdx
+		kind = ":" + generatedPrefix + "kind"
+	}
+	for _, f := range files {
+		d.specs = append(d.specs, licenseSpec{name: licenseTarget(f.name), pkg: f.pkg, file: f.base, kind: kind})
+	}
+	if len(files) == 0 {
+		d.specs = []licenseSpec{{name: licenseTarget(""), pkg: rel, kind: kind}}
+	}
+	return d
+}
+
+// detectSpecs reads the SPDX ids from the license files. A file with several
+// ids gets one license() per id, since a license() has a single kind. Files
+// that match no standard license are reported and skipped: dependencies are
+// not ours to fail on.
+func detectSpecs(repoRoot, rel string, cfg *licenseConfig, files []licenseFile) []licenseSpec {
+	dir := filepath.Join(repoRoot, filepath.FromSlash(rel))
+	var specs []licenseSpec
+	for _, f := range files {
+		det, detector, err := detectFile(dir, rel, f.name, cfg)
+		if err != nil {
+			log.Printf("gazelle license: %s: %v", path.Join(rel, f.name), err)
+			continue
+		}
+		if !det.Standard || len(det.IDs) == 0 {
+			log.Printf("gazelle license: %s does not match a standard license (%s confidence %.1f%%); no license() generated", path.Join(rel, f.name), detector, det.Percent)
+			continue
+		}
+		for _, id := range det.IDs {
+			name := licenseTarget(f.name)
+			if len(det.IDs) > 1 {
+				name += "_" + licenseSuffix(id)
+			}
+			specs = append(specs, licenseSpec{name: name, pkg: f.pkg, file: f.base, kind: "@" + metadataModule + "//licenses/spdx:" + id})
+		}
+	}
+	return specs
+}
+
 const (
 	generatedDir    = "_gazelle_generated"
 	generatedPrefix = "gazelle_generated_"
@@ -661,40 +822,6 @@ func licenseTarget(file string) string {
 		return generatedPrefix + "license"
 	}
 	return generatedPrefix + licenseSuffix(file)
-}
-
-func licenseFiles(cfg *licenseConfig, names []string) []string {
-	var files []string
-	for _, f := range names {
-		if isLicenseFile(cfg.files, f) {
-			files = append(files, f)
-		}
-	}
-	sort.Strings(files)
-	return files
-}
-
-// ownerLicenseFiles lists the license files of the declaration's own
-// directory, which may be a different one than the directory being generated.
-func ownerLicenseFiles(cfg *licenseConfig, args language.GenerateArgs) []string {
-	if args.Rel == cfg.owner {
-		return licenseFiles(cfg, args.RegularFiles)
-	}
-	entries, err := os.ReadDir(filepath.Join(args.Config.RepoRoot, filepath.FromSlash(cfg.owner)))
-	if err != nil {
-		return nil
-	}
-	var names []string
-	for _, e := range entries {
-		if e.Type().IsRegular() {
-			names = append(names, e.Name())
-		}
-	}
-	return licenseFiles(cfg, names)
-}
-
-func ownerLabel(owner, name string) string {
-	return "//" + owner + ":" + name
 }
 
 func findRule(f *rule.File, kind, name string) *rule.Rule {

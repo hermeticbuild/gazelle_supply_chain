@@ -18,26 +18,28 @@ bazel_dep(name = "rules_shell", version = "0.6.1")
 bazel_dep(name = "supply-chain-go", version = "0.0.6")
 bazel_dep(name = "gazelle_supply_chain", version = "HEAD")
 
-GIT_COMMIT = "df3e61f82ee285763f3ed5cbfc0fab1fedd976ec"
+# Tip of darkrift/supply-chain@concluded-license-overrides, whose SBOM output
+# includes license information.
+GIT_COMMIT = "c31412e3383a60b5ff1f13a1f7c1f77e66fa96fc"
 
 git_override(
     module_name = "package_metadata",
     commit = GIT_COMMIT,
-    remote = "https://github.com/bazel-contrib/supply-chain.git",
+    remote = "https://github.com/darkrift/supply-chain.git",
     strip_prefix = "metadata",
 )
 
 git_override(
     module_name = "supply_chain_tools",
     commit = GIT_COMMIT,
-    remote = "https://github.com/bazel-contrib/supply-chain.git",
+    remote = "https://github.com/darkrift/supply-chain.git",
     strip_prefix = "tools",
 )
 
 git_override(
     module_name = "supply-chain-go",
     commit = GIT_COMMIT,
-    remote = "https://github.com/bazel-contrib/supply-chain.git",
+    remote = "https://github.com/darkrift/supply-chain.git",
     strip_prefix = "lib/supplychain-go",
 )
 
@@ -46,8 +48,91 @@ local_path_override(
     path = "..",
 )
 
+# The Mattermost server module requires Go 1.26.10.
+go_sdk = use_extension("@rules_go//go:extensions.bzl", "go_sdk")
+go_sdk.download(version = "1.26.10")
+
 go_deps = use_extension("@gazelle//:extensions.bzl", "go_deps")
 go_deps.from_file(go_mod = "//:go.mod")
+
+# Every other Go module gets the license plugin too, next to the regular
+# languages: `detect` reads the SPDX id from the module's own LICENSE file and
+# attaches it to the package_metadata that go_repository generates.
+go_deps.gazelle_default_attributes(
+    build_extra_args = [
+        "-license_default=//_gazelle_generated:package_metadata detect",
+        "-license_strict",
+    ],
+)
+
+# go.yaml.in/yaml/v3 has one LICENSE file that holds MIT and Apache-2.0 plus
+# explanatory prose. licensecheck covers it at ~85%, below its 90% default.
+# Only a few files (apic.go, emitterc.go, parserc.go, readerc.go, scannerc.go,
+# writerc.go, yamlh.go, yamlprivateh.go) are MIT, ported from libyaml; the rest
+# is Apache-2.0. The patch below, applied after Gazelle, moves those files into
+# a filegroup with MIT metadata and gives the library itself Apache-2.0.
+# TODO: once package_metadata supports license expressions, declare the module
+# as `Apache-2.0 AND MIT` and drop the patch.
+go_deps.gazelle_override(
+    build_extra_args = [
+        "-license_default=//_gazelle_generated:package_metadata detect",
+        "-license_confidence=licensecheck=80 LICENSE",
+        "-license_strict",
+    ],
+    path = "go.yaml.in/yaml/v3",
+)
+go_deps.module_override(
+    patch_strip = 1,
+    patches = ["//patches:yaml_v3_license_split.patch"],
+    path = "go.yaml.in/yaml/v3",
+)
+
+# sigs.k8s.io/yaml vendors forks of go-yaml in goyaml.v2/ with their own LICENSE,
+# and another in goyaml.v3/, both of which strict mode wants declared. The v3
+# license text holds MIT and Apache-2.0 plus prose and only reaches 85% with
+# licensecheck, below its 90% default, so lower it for that file.
+go_deps.gazelle_override(
+    build_extra_args = [
+        "-license_default=//_gazelle_generated:package_metadata detect",
+        "-license_subtree=goyaml.v2=//goyaml.v2:package_metadata detect",
+        "-license_subtree=goyaml.v3=//goyaml.v3:package_metadata detect",
+        "-license_confidence=licensecheck=80 goyaml.v3/LICENSE",
+        "-license_strict",
+    ],
+    path = "sigs.k8s.io/yaml",
+)
+
+# testify vendors difflib and spew in internal/ with their own LICENSE files.
+go_deps.gazelle_override(
+    build_extra_args = [
+        "-license_default=//_gazelle_generated:package_metadata detect",
+        "-license_subtree=internal/difflib=//internal/difflib:package_metadata detect",
+        "-license_subtree=internal/spew=//internal/spew:package_metadata detect",
+        "-license_strict",
+    ],
+    path = "github.com/stretchr/testify",
+)
+
+# dgoogauth ships no license file; its README says it is Apache-2.0, so declare
+# that rather than leaving it unlicensed.
+go_deps.gazelle_override(
+    build_extra_args = [
+        "-license_default=//_gazelle_generated:package_metadata Apache-2.0",
+        "-license_strict",
+    ],
+    path = "github.com/dgryski/dgoogauth",
+)
+
+# tools-golang keeps the license of its code in LICENSE.code; LICENSE.docs
+# (CC-BY-4.0) only covers its documentation, so it is not scanned.
+go_deps.gazelle_override(
+    build_extra_args = [
+        "-license_default=//_gazelle_generated:package_metadata detect",
+        "-license_files=LICENSE.code",
+        "-license_strict",
+    ],
+    path = "github.com/spdx/tools-golang",
+)
 
 # BuildBuddy ships its own BUILD files and we keep them. Gazelle runs with only
 # the license language (-lang=license), so it just merges one
@@ -79,9 +164,22 @@ go_deps.module_override(
     patches = ["//patches:buildbuddy_root_build.patch"],
     path = "github.com/buildbuddy-io/buildbuddy",
 )
+# Mattermost's server module is AGPL-3.0, but the module zip leaves out the
+# repository's root LICENSE.txt, so there is no file to detect it from and it is
+# declared. server/enterprise has its own source-available license, which only
+# exists as a symlink at the repository root, hence a subtree declaration.
+go_deps.gazelle_override(
+    build_extra_args = [
+        "-license_default=//_gazelle_generated:package_metadata AGPL-3.0-only",
+        "-license_subtree=enterprise=//enterprise:package_metadata LicenseRef-Mattermost-Enterprise",
+    ],
+    build_file_generation = "on",
+    path = "github.com/mattermost/mattermost/server/v8",
+)
 use_repo(
     go_deps,
     "com_github_buildbuddy_io_buildbuddy",
+    "com_github_mattermost_mattermost_server_v8",
 )
 
 # go_repository always runs the Gazelle from @bazel_gazelle_go_repository_tools.
