@@ -4,12 +4,11 @@ bazel_dep(name = "rules_go", version = "0.60.0")
 bazel_dep(name = "gazelle", version = "2.0.0-beta.2")
 
 # go_repository must write its package metadata before running Gazelle. Until
-# that is merged upstream and released, patch the release with it.
-single_version_override(
+# that is released, use the merged upstream commit.
+git_override(
     module_name = "gazelle",
-    patch_strip = 1,
-    patches = ["//patches:gazelle_package_metadata_before_gazelle.patch"],
-    version = "2.0.0-beta.2",
+    commit = "5cc8299af468de4290cf40f93b3ef046e866446d",
+    remote = "https://github.com/bazel-contrib/bazel-gazelle.git",
 )
 
 bazel_dep(name = "package_metadata", version = "0.0.13")
